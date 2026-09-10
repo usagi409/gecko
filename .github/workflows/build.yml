@@ -77,7 +77,7 @@ jobs:
           name: gecko-windows-portable.zip
 
       - name: Unzip
-        run: Expand-Archive gecko-windows-potable.zip -DestinationPath dist
+        run: Expand-Archive gecko-windows-portable.zip -DestinationPath dist
 
       - name: Install Inno Setup
         run: choco install innosetup -y
