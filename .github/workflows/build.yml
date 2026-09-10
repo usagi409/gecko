@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            asset: gecko-windows.zip
+            asset: gecko-windows-portable.zip
           - os: macos-latest
             asset: gecko-macos.zip
           - os: ubuntu-latest
@@ -74,7 +74,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: gecko-windows.zip
+          name: gecko-windows-portable.zip
 
       - name: Unzip
         run: Expand-Archive gecko-windows.zip -DestinationPath dist
@@ -109,7 +109,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            gecko-windows.zip
+            gecko-windows-portable.zip
             gecko-macos.zip
             gecko-linux.zip
             gecko-setup-*.exe
