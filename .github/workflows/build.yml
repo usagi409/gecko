@@ -53,12 +53,14 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           copy gek-click.bat dist\gecko\
+          copy README-portable.txt dist\gecko\README.txt
           Compress-Archive -Path dist\gecko -DestinationPath ${{ matrix.asset }}
 
       - name: Pack (macOS / Linux)
         if: runner.os != 'Windows'
         run: |
           chmod +x dist/gecko/gecko
+          cp README-portable.txt dist/gecko/README.txt
           (cd dist && zip -qr ../${{ matrix.asset }} gecko)
 
       - uses: actions/upload-artifact@v4
