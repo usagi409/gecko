@@ -11,7 +11,7 @@ Releases から `gecko-setup-*.exe` をダウンロードして実行するだ�
 - Python は不要
 - `.gek` のダブルクリック実行を自動登録
 - `gecko` コマンドを PATH に追加するかはチェックボックスで選択
--  설치先: `C:\Users\(ユーザー名)\AppData\Local\gecko`（画面で変更可）
+-  保存先: `C:\Users\(ユーザー名)\AppData\Local\gecko`（画面で変更可）
 
 ## 使い方
 - `.gek` をダブルクリック → 実行（終わりに窓が残ります）
