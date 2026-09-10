@@ -35,7 +35,7 @@ Python のインストールなどは一切不要です。
 【サンプルコードについて】
 この zip にはサンプルコードは入っていません。
 サンプルはインストーラ版、または以下にあります:
-    - リポジトリ: https://github.com/（あなたのID）/gecko
+    - リポジトリ: https://github.com/usagi409/gecko
     - Releases ページ: 上記リポジトリの Releases
 
 【注意】
