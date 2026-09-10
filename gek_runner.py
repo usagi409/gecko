@@ -42,7 +42,15 @@ def find_converter(start_dir: str):
         path = os.path.join(here, name)
         if os.path.isfile(path):
             return path
-
+            
+    # PyInstaller で凍結したときの同梱変換器
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        for name in CONVERTER_NAMES:
+            path = os.path.join(meipass, name)
+            if os.path.isfile(path):
+                return path
+    
     return None
 
 
