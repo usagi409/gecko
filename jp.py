@@ -5,13 +5,13 @@ import os
 import re
 import sys
 import tokenize
+from types import SimpleNamespace
 
 
 # =========================================================
 # 設定
 # =========================================================
 
-# 裸の日本語単語を自動で文字列として扱うかどうか。
 AUTO_STRING_BARE_JAPANESE = False
 
 # カウントモード: "0" / "1" / "1all"
@@ -37,12 +37,6 @@ RE_COUNT = re.compile(
 
 
 def scan_settings(source: str):
-    """
-    ファイル先頭の設定行を読む。
-    戻り値: (count_mode, pause)
-      pause は None なら「指定なし」。
-    設定が先頭以外にあれば SyntaxError。
-    """
     mode = "0"
     pause = None
     seen_code = False
@@ -91,7 +85,6 @@ def scan_settings(source: str):
 
 # =========================================================
 # 全角スペースを半角スペースに正規化する
-# ただし文字列の中とコメントの中はそのままにする
 # =========================================================
 
 def normalize_spaces(source: str) -> str:
@@ -144,8 +137,11 @@ CONST_MAP = {
 FUNC_MAP = {
     "表示する": "print",
     "表示": "print",
+    "書く": "print",
+    "言う": "print",
     "入力": "input",
     "入力する": "input",
+    "聞く": "input",
     "長さ": "len",
     "整数": "int",
     "実数": "float",
@@ -157,25 +153,27 @@ LOGIC_MAP = {
     "そして": "and",
     "かつ": "and",
     "または": "or",
-    "でない": "not",
 }
 
 KEYWORD_MAP = {
     "関数": "def",
+    "定義": "def",
     "クラス": "class",
     "戻り値": "return",
     "繰り返し": "for",
-    "ながら": "while",
     "読み込む": "import",
     "として": "as",
 
     # 制御構文パック
     "抜ける": "break",
+    "やめる": "break",
     "続ける": "continue",
+    "飛ばす": "continue",
     "何もしない": "pass",
     "試す": "try",
     "捕まえる": "except",
     "最終": "finally",
+    "最後に": "finally",
     "一緒に": "with",
 
     # 例外クラスの日本語別名
@@ -211,10 +209,9 @@ COMP_MAP = {
     "小さい": "<",
     "ではない": "!=",
     "じゃない": "!=",
+    "になる": "==",
 }
 
-# 左右を入れ替える包含演算子
-# A が B を含む → B in A
 SWAP_COMP = {
     "を含む": "in",
     "を含まない": "not in",
@@ -251,13 +248,18 @@ RESERVED_LINE_START = {
     "クラス",
     "戻り値",
     "繰り返し",
-    "ながら",
     "読み込む",
     "ループ",
     "設定",
+    "ずっと",
+    "定義",
+    "最後に",
+    "飛ばす",
+    "やめる",
+    "捕まえる",
+    "一緒に",
 } | ELSE_WORDS | ELIF_CONTIGUOUS | ELIF_STARTERS
 
-# 助詞など「識別子ではない」日本語トークン
 PARTICLE_WORDS = {
     "は", "を", "が", "に", "へ", "と",
     "から", "より", "まで", "なら", "しか", "や",
@@ -272,7 +274,7 @@ NON_IDENTIFIER_WORDS = (
     | ELSE_WORDS
     | ELIF_CONTIGUOUS
     | ELIF_STARTERS
-    | {"変数", "設定", "ループ", "もし", "繰り返し", "ながら"}
+    | {"変数", "設定", "ループ", "もし", "繰り返し", "変換", "調べる"}
 )
 
 SKIP_TYPES = {
@@ -315,7 +317,19 @@ def map_expr_token(tok):
 def expr_of(tokens):
     if not tokens:
         return ""
-    return tokenize.untokenize([map_expr_token(t) for t in tokens]).strip()
+
+    mapped = []
+    prev = None
+
+    for t in tokens:
+        # ドットの後ろは翻訳しない（メソッド名・名前空間属性）
+        if prev is not None and prev.type == tokenize.OP and prev.string == ".":
+            mapped.append((t.type, t.string))
+        else:
+            mapped.append(map_expr_token(t))
+        prev = t
+
+    return tokenize.untokenize(mapped).strip()
 
 
 def value_expr(tokens):
@@ -376,6 +390,11 @@ def find_comparison(tokens):
             if nxt.type == tokenize.NAME and nxt.string == "ない":
                 return (i, i + 1), "!="
 
+        if tok.string == "に" and i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if nxt.type == tokenize.NAME and nxt.string == "なる":
+                return (i, i + 1), "=="
+
         if tok.string in SWAP_COMP:
             return (i,), "SWAP:" + SWAP_COMP[tok.string]
 
@@ -406,6 +425,29 @@ def split_tokens_by(tokens, word):
 # =========================================================
 
 def build_single_condition(tokens, carried_left=None):
+    # 末尾のコロンは取り除く
+    while tokens and tokens[-1].type == tokenize.OP and tokens[-1].string == ":":
+        tokens = tokens[:-1]
+
+    # 語尾の否定: 条件 でない
+    negate = False
+    if (
+        tokens
+        and tokens[-1].type == tokenize.NAME
+        and tokens[-1].string == "でない"
+    ):
+        negate = True
+        tokens = tokens[:-1]
+
+    expr, left_s = _build_single_condition(tokens, carried_left)
+
+    if negate:
+        expr = f"not ({expr})"
+
+    return expr, left_s
+
+
+def _build_single_condition(tokens, carried_left=None):
     while tokens and tokens[-1].type == tokenize.OP and tokens[-1].string == ":":
         tokens = tokens[:-1]
 
@@ -508,7 +550,7 @@ def build_condition(tokens):
 
 
 # =========================================================
-# if / elif / while / for
+# if / elif / for / ループ構文
 # =========================================================
 
 def build_if(indent, tokens, comment):
@@ -551,19 +593,33 @@ def build_elif(indent, tokens, comment, start_idx=1):
     return line
 
 
-def build_while(indent, tokens, comment):
-    nara_indices = [
-        i for i, tok in enumerate(tokens)
-        if tok.type == tokenize.NAME and tok.string == "なら"
-    ]
+# ---------------------------------------------------
+# 語尾ループ構文ビルダー
+# ---------------------------------------------------
 
-    if nara_indices:
-        cond_tokens = tokens[1:nara_indices[-1]]
-    else:
-        cond_tokens = tokens[1:]
-
-    expr = build_condition(cond_tokens)
+def build_while_cond(indent, tokens, comment):
+    expr = build_condition(tokens)
     line = f"{indent}while {expr}:"
+
+    if comment:
+        line += "  " + comment
+
+    return line
+
+
+def build_while_until(indent, tokens, comment):
+    expr = build_condition(tokens)
+    line = f"{indent}while not ({expr}):"
+
+    if comment:
+        line += "  " + comment
+
+    return line
+
+
+def build_repeat_n(indent, tokens, comment):
+    expr = expr_of(tokens)
+    line = f"{indent}for _ in 範囲({expr}):"
 
     if comment:
         line += "  " + comment
@@ -587,7 +643,6 @@ def build_for(indent, tokens, comment):
     while iter_tokens and iter_tokens[-1].type == tokenize.OP and iter_tokens[-1].string == ":":
         iter_tokens = iter_tokens[:-1]
 
-    # 「i と 商品」→「i, 商品」
     var_mapped = []
     for tok in var_tokens:
         if tok.type == tokenize.NAME and tok.string == "と":
@@ -659,18 +714,28 @@ def build_assign(indent, tokens, comment):
 
 def simple_map_line(indent, tokens, comment):
     mapped = []
+    prev = None
 
     for tok in tokens:
-        if tok.type == tokenize.NAME:
+        after_dot = (
+            prev is not None
+            and prev.type == tokenize.OP
+            and prev.string == "."
+        )
+
+        if tok.type == tokenize.NAME and not after_dot:
             if tok.string in KEYWORD_MAP:
                 mapped.append((tok.type, KEYWORD_MAP[tok.string]))
+                prev = tok
                 continue
 
             if tok.string in FUNC_MAP:
                 mapped.append((tok.type, FUNC_MAP[tok.string]))
+                prev = tok
                 continue
 
         mapped.append((tok.type, tok.string))
+        prev = tok
 
     text = tokenize.untokenize(mapped).strip()
     line = indent + text
@@ -683,8 +748,6 @@ def simple_map_line(indent, tokens, comment):
 
 # =========================================================
 # 全部モード用の添字シフト
-# リスト[i]   → リスト[(i) - 1]
-# リスト[a:b] → リスト[(a) - 1:(b)]
 # =========================================================
 
 def _fab(typ, s):
@@ -707,7 +770,6 @@ def shift_subscripts(tokens):
             elif prev.type == tokenize.OP:
                 is_sub = prev.string in (")", "]")
             elif prev.type == tokenize.NAME:
-                # 「は [ ... 」のようなリストリテラルを添字と誤認しない
                 is_sub = prev.string not in NON_IDENTIFIER_WORDS
             else:
                 is_sub = False
@@ -814,7 +876,6 @@ def convert_line(raw_line):
     if not meaningful:
         return raw_line
 
-    # 全部モードなら生の添字をシフト
     if COUNT_MODE == "1all":
         meaningful = shift_subscripts(meaningful)
 
@@ -859,13 +920,188 @@ def convert_line(raw_line):
         return line
 
     # ---------------------------------------------------
-    # if / while / for
+    # ずっと → while True:  (Scratch の forever)
+    # ---------------------------------------------------
+    if (
+        first.type == tokenize.NAME
+        and first.string == "ずっと"
+        and len(meaningful) == 2
+        and meaningful[1].type == tokenize.OP
+        and meaningful[1].string == ":"
+    ):
+        line = indent + "while True:"
+        if comment:
+            line += "  " + comment
+        return line
+
+    # ---------------------------------------------------
+    # 語尾ループ構文
+    #   条件 あいだ: / 条件 あいだ ずっと:   → while 条件
+    #   条件 なら 繰り返す:                  → while 条件
+    #   条件 まで 繰り返す:                  → while not (条件)
+    #   N 回 繰り返す:                       → for _ in 範囲(N):
+    #   リスト から x を 取り出して 繰り返す: → for x in リスト:
+    #   リスト の x ごとに 繰り返す:          → for x in リスト:
+    # ※「x は ...」の代入形は誤認するので飛ばす
+    # ---------------------------------------------------
+    is_assign_shape = (
+        len(meaningful) >= 2
+        and meaningful[1].type == tokenize.NAME
+        and meaningful[1].string == "は"
+    )
+
+    if not is_assign_shape:
+        toks = meaningful
+        while toks and toks[-1].type == tokenize.OP and toks[-1].string == ":":
+            toks = toks[:-1]
+
+        if toks and toks[-1].type == tokenize.NAME:
+            last_s = toks[-1].string
+
+            if (
+                last_s == "ずっと"
+                and len(toks) >= 2
+                and toks[-2].type == tokenize.NAME
+                and toks[-2].string == "あいだ"
+            ):
+                return build_while_cond(indent, toks[:-2], comment)
+
+            if last_s == "あいだ":
+                return build_while_cond(indent, toks[:-1], comment)
+
+            if last_s == "繰り返す":
+                if (
+                    len(toks) >= 2
+                    and toks[-2].type == tokenize.NAME
+                    and toks[-2].string == "回"
+                ):
+                    return build_repeat_n(indent, toks[:-2], comment)
+
+                if (
+                    len(toks) >= 2
+                    and toks[-2].type == tokenize.NAME
+                    and toks[-2].string == "なら"
+                ):
+                    return build_while_cond(indent, toks[:-2], comment)
+
+                # リスト から x を 取り出して 繰り返す
+                if (
+                    len(toks) >= 5
+                    and toks[-2].type == tokenize.NAME
+                    and toks[-2].string == "取り出して"
+                    and toks[-3].type == tokenize.NAME
+                    and toks[-3].string == "を"
+                    and toks[-5].type == tokenize.NAME
+                    and toks[-5].string == "から"
+                ):
+                    var_s = expr_of(toks[-4:-3])
+                    base_s = expr_of(toks[:-5])
+                    line = f"{indent}for {var_s} in {base_s}:"
+                    if comment:
+                        line += "  " + comment
+                    return line
+
+                # リスト の x ごとに 繰り返す
+                if (
+                    len(toks) >= 4
+                    and toks[-2].type == tokenize.NAME
+                    and toks[-2].string == "ごとに"
+                    and toks[-4].type == tokenize.NAME
+                    and toks[-4].string == "の"
+                ):
+                    var_s = expr_of(toks[-3:-2])
+                    base_s = expr_of(toks[:-4])
+                    line = f"{indent}for {var_s} in {base_s}:"
+                    if comment:
+                        line += "  " + comment
+                    return line
+
+                made_idx = None
+                for i, t in enumerate(toks):
+                    if t.type == tokenize.NAME and t.string == "まで":
+                        made_idx = i
+
+                if made_idx is not None and made_idx >= 1:
+                    return build_while_until(indent, toks[:made_idx], comment)
+
+    # ---------------------------------------------------
+    # 捕まえる E なら: / 捕まえる なら:   (as なし except)
+    # ---------------------------------------------------
+    if first.type == tokenize.NAME and first.string == "捕まえる":
+        toks2 = meaningful
+        while toks2 and toks2[-1].type == tokenize.OP and toks2[-1].string == ":":
+            toks2 = toks2[:-1]
+
+        if toks2 and toks2[-1].type == tokenize.NAME and toks2[-1].string == "なら":
+            if len(toks2) == 2:
+                line = indent + "except:"
+            else:
+                # 例外名は KEYWORD_MAP で翻訳する（値エラー → ValueError など）
+                mapped = []
+                for t in toks2[1:-1]:
+                    if t.type == tokenize.NAME and t.string in KEYWORD_MAP:
+                        mapped.append((t.type, KEYWORD_MAP[t.string]))
+                    else:
+                        mapped.append((t.type, t.string))
+                e_s = tokenize.untokenize(mapped).strip()
+                line = f"{indent}except {e_s} as エラー:"
+
+            if comment:
+                line += "  " + comment
+            return line
+
+    # ---------------------------------------------------
+    # 一緒に ... を f として:   (as なし with)
+    # ---------------------------------------------------
+    if first.type == tokenize.NAME and first.string == "一緒に":
+        toks2 = meaningful
+        while toks2 and toks2[-1].type == tokenize.OP and toks2[-1].string == ":":
+            toks2 = toks2[:-1]
+
+        if (
+            len(toks2) >= 4
+            and toks2[-1].type == tokenize.NAME
+            and toks2[-1].string == "として"
+            and toks2[-2].type == tokenize.NAME
+            and toks2[-3].type == tokenize.NAME
+            and toks2[-3].string == "を"
+        ):
+            expr_s = expr_of(toks2[1:-3])
+            var_s = toks2[-2].string
+            line = f"{indent}with {expr_s} as {var_s}:"
+            if comment:
+                line += "  " + comment
+            return line
+
+    # ---------------------------------------------------
+    # m を n として 読み込む   (import as 別名)
+    # ---------------------------------------------------
+    if first.type == tokenize.NAME and first.string != "読み込む":
+        toks2 = meaningful
+        while toks2 and toks2[-1].type == tokenize.OP and toks2[-1].string == ":":
+            toks2 = toks2[:-1]
+
+        if (
+            len(toks2) >= 5
+            and toks2[-1].type == tokenize.NAME
+            and toks2[-1].string == "読み込む"
+            and toks2[-2].type == tokenize.NAME
+            and toks2[-2].string == "として"
+            and toks2[-4].type == tokenize.NAME
+            and toks2[-4].string == "を"
+        ):
+            m_s = expr_of(toks2[:-4])
+            n_s = toks2[-3].string
+            line = f"{indent}import {m_s} as {n_s}"
+            if comment:
+                line += "  " + comment
+            return line
+
+    # ---------------------------------------------------
+    # if / for
     # ---------------------------------------------------
     if first.type == tokenize.NAME and first.string == "もし":
         return build_if(indent, meaningful, comment)
-
-    if first.type == tokenize.NAME and first.string == "ながら":
-        return build_while(indent, meaningful, comment)
 
     if first.type == tokenize.NAME and first.string == "繰り返し":
         return build_for(indent, meaningful, comment)
@@ -901,7 +1137,6 @@ def transpile(source: str) -> str:
     converted = []
 
     for line in lines:
-        # 設定行は空行にして行番号を保つ
         if line.strip().startswith("設定"):
             converted.append("")
             continue
@@ -1029,8 +1264,11 @@ def run_source(source: str, filename="<日本語コード>", debug: bool = False
         "__name__": "__main__",
         "表示": print,
         "表示する": print,
+        "書く": print,
+        "言う": print,
         "入力": input,
         "入力する": input,
+        "聞く": input,
 
         "範囲": 範囲,
         "列挙": 列挙,
@@ -1048,6 +1286,18 @@ def run_source(source: str, filename="<日本語コード>", debug: bool = False
         "最小": 最小,
         "合計": 合計,
     }
+
+    runtime_globals["変換"] = SimpleNamespace(
+        文字列=str,
+        整数=int,
+        実数=float,
+    )
+
+    runtime_globals["調べる"] = SimpleNamespace(
+        長さ=len,
+        文字型=lambda v: isinstance(v, str),
+        数型=lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    )
 
     if filename != "<日本語コード>":
         runtime_globals["__file__"] = os.path.abspath(filename)
